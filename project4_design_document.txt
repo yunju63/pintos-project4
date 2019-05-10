@@ -1,0 +1,338 @@
+﻿			+----------------------------+
+			|	CS 330	           |
+			| PROJECT 4 : FILE SYSTEMS|
+			|     DESIGN DOCUMENT    |
+			+----------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+Team 25
+20140461 이찬욱 cksdnr314@kaist.ac.kr 50%
+
+20150330 박윤주 dbswndigh@kaist.ac.kr 50%
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+사용할 토큰: 1일
+
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+없음
+
+
+
+		     INDEXED AND EXTENSIBLE FILES
+		     ============================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+/* inode.c의 structure들에 아래와 같이 멤버들을 추가 혹은 변경함 */
+struct inode_disk
+  {
+
+    /* for extensible file implementation */
+
+    disk_sector_t direct_ptr;           	/* points data sector */
+
+    disk_sector_t indirect_ptr;         	/* points sector pointing data sector */
+
+    disk_sector_t doubly_indirect_ptr;  	/* points sector pointing sector pointing data sector */
+    uint32_t unused[121];               	/* Not used, 크기를 맞추기 위해 125에서 121로 변경 */
+  
+};
+
+
+struct inode 
+  {
+
+
+    /* pointers to blocks */
+
+    disk_sector_t direct_ptr;           	/* points data sector */
+
+    disk_sector_t indirect_ptr;         	/* points sector pointing data sector */
+
+    disk_sector_t doubly_indirect_ptr;  	/* points sector pointing sector pointing data sector */
+
+
+
+
+    /* for synchronization */
+ 
+    struct lock lock;
+			/* write가 file_extension을 일으킬 때 이를 atomic하게 만들어줌 */
+    off_t read_length;
+
+    		/* write로 인한 길이 변화를 write가 끝나기 전까지 다른 read에게 보이지 않기 위함 */  
+};
+
+
+>> A2: What is the maximum size of a file supported by your inode
+>> structure?  Show your work.
+
+  우리의 inode structure는 direct, indirect, doubly indirect block pointer를 각각 하나씩 가지고 있다.
+각 pointer에 의해 지원되는 파일의 데이터 용량을 계산하면 다음과 같다.
+direct: 1*512B = 512B = 0.5KB
+indirect: 1*(512B/4B)*512B = 65536B = 64KB
+doubly indirect: 1*(512B/4B)*(512B/4B)*512B = 8388608B = 8192KB
+따라서 우리의 inode structure로는 최대 (0.5+64+8192)KB = 8256.5KB의 파일 크기를 지원할 수 있다.
+
+
+---- SYNCHRONIZATION ----
+
+>> A3: Explain how your code avoids a race if two processes attempt to
+>> extend a file at the same time.
+  inode_write_at() 함수 안에서 file extension이 일어나야 할 경우에는 inode_grow()가 불린다.
+ 문제에서 주어진(두 개 이상의 프로세스가 동시에 한 file을 extension하는) race condition을 막기 위해,
+inode_grow() 함수를 부르기 전후에 inode->is_dir이 false일 때 inode->lock을 acquire, release 해 주었다.
+
+
+>> A4: Suppose processes A and B both have file F open, both
+>> positioned at end-of-file.  If A reads and B writes F at the same
+>> time, A may read all, part, or none of what B writes.  However, A
+>> may not read data other than what B writes, e.g. if B writes
+>> nonzero data, A is not allowed to see all zeros.  Explain how your
+>> code avoids this race.
+  end-of-file에서 B가 write를 할 때 file grow가 일어난다. 이 때 inode->length가 커지는데, write가 완전히 종료되기 전까지는 inode->read_length는 커지지 않게 구현하였다. 또한 read가 일어날 때에는 inode->read_length를 넘어선 영역을 읽을 수는 없게 하였다. 따라서 write 도중 file grow가 
+발생해도 A는 확장된 영역에 대해서는 접근하지 못하고 기존의 영역에서만 read가 가능하다.
+ write가 종료될 때 inode->read_length도 커지므로, wirte가 종료된 후에는 확장된 영역에 대해서도 read를 할 수 있다.
+
+>> A5: Explain how your synchronization design provides "fairness".
+>> File access is "fair" if readers cannot indefinitely block writers
+>> or vice versa.  That is, many processes reading from a file cannot
+>> prevent forever another process from writing the file, and many
+>> processes writing to a file cannot prevent another process forever
+>> from reading the file.
+
+  현재 디자인에서 write할 때 파일 확장의 경우를 제외하면 lock을 사용하지 않았다. 
+하나의 파일에 여러 process가 read를 할 수 있고 write를 막지 않는다.
+ 마찬가지로 하나의 파일에 여러 process가 write를 할 수 있고 read를 막지 않는다. 
+따라서 multi-read/write가 가능하다. 
+extended file에 관해서는 한 프로세스만 접근 가능하여 fairness문제가 발생할 수 있어서 
+이를 개선하고자 한다면 디자인을 수정해야 한다.
+
+---- RATIONALE ----
+
+>> A6: Is your inode structure a multilevel index?  If so, why did you
+>> choose this particular combination of direct, indirect, and doubly
+>> indirect blocks?  If not, why did you choose an alternative inode
+>> structure, and what advantages and disadvantages does your
+>> structure have, compared to a multilevel index?
+  1 direct, 1 indirect, and 1 doubly indirect block pointer를 가지고 있다.
+ pintos document에서 언급된 것처럼, disk의 크기는 8MB보다 크지 않다. 따라서 (8MB-메타데이터의 크기(=512B))=8388096B 가 file의 최대 크기이다. 
+A2에서 계산한 것처럼 indirect block pointer로는 64KB까지만 지원가능하다. 또한 block pointer로만 inode sector를 다 채운다 해도 최대 (512B/4B)=128개인데, length, is_dir 등 다른 속성정보도 저장해야 하므로 125보다 작다. 
+그러므로 doubly indirect block pointer 없이는 지원가능한 파일의 크기가 64KB*125보다 작아, 위에서 계산한 file의 최대 크기를 지원할 수 없다. 
+따라서 doubly indirect block pointer가 하나 이상 필요하다고 판단하였다.
+ 추가로 작은 크기의 파일도 효율적으로 처리하게 하기 위해서 direct, indirect block pointer을 추가하였다.
+
+
+
+			    SUBDIRECTORIES
+			    ==============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+struct inode_disk
+{
+  
+  int is_dir;		//디렉토리인지 확인
+  
+  disk_sector_t parent;	//부모 디렉토리가 있을 경우 저장
+
+}
+
+struct inode
+{
+  
+  int is_dir;		//디렉토리인지 확인
+  
+  disk_sector_t parent;	//부모 디렉토리가 있을 경우 저장
+
+}
+
+
+struct thread
+{
+  
+  struct dir * dir;	//현재 프로세스의 디렉토리를 저장
+
+}
+---- ALGORITHMS ----
+
+>> B2: Describe your code for traversing a user-specified path.  How
+>> do traversals of absolute and relative paths differ?
+
+  경로가 string으로 들어오면 /에 따라서 나누어 디렉토리를 찾아가게 된다.
+ 주어진 경로의 첫 char가 '/'이면(absolute) 맨처음 시작 디렉토리를 root 디렉토리로 
+설정한 후 주어진 경로에 따라 찾아가게 하였고, 
+주어진 경로의 첫 char가 '/'이 아니면(relative) 현재 process의 디렉토리를 시작
+디렉토리로 설정한 후 경로에 따라 찾아가게 했다.
+
+
+---- SYNCHRONIZATION ----
+
+>> B4: How do you prevent races on directory entries?  For example,
+>> only one of two simultaneous attempts to remove a single file
+>> should succeed, as should only one of two simultaneous attempts to
+>> create a file with the same name, and so on.
+
+  dir_remove, dir_add, 또 dir_readdir, dir_lookup 함수에서 dir파일에 접근하여 수정이 이루어질 때 
+각각의 inode에 있는 inode_lock을 acquire하고 release하여 race condition을
+ 피했다.
+
+>> B5: Does your implementation allow a directory to be removed if it
+>> is open by a process or if it is in use as a process's current
+>> working directory?  If so, what happens to that process's future
+>> file system operations?  If not, how do you prevent it?
+  프로세스가 사용중이거나 연 디렉토리는 지우지 못하게 구현하였다. dir_open을 통해 열면 
+inode의 open count가 증가하고 dir_close를 하면 count가 감소하는 것을 통해 
+count가 0이 아니면 디렉토리를 지우지 못하게 하여 구현했다. 
+추가로 디렉토리가 비어있지 않으면 지우지 못하게 하였다.
+
+
+---- RATIONALE ----
+
+>> B6: Explain why you chose to represent the current directory of a
+>> process the way you did.
+
+  thread structure에 struct dir * dir을 저장하여 현재 디렉토리를 저장하게 하였다.
+ 따라서 현재 프로세스의 디렉토리를 열고 닫으며 디렉토리를 관리할 때 dir_open, dir_close
+를 통해 쉽게 관리할 수 있다.
+
+
+			     BUFFER CACHE
+			     ============
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+
+struct list buffer_cache; //cache_line을 담고 있는 리스트
+
+
+struct cache_line{
+ 
+ uint8_t block[DISK_SECTOR_SIZE];  /* cache block size = disk sector size = 512B */
+
+  disk_sector_t sector_idx;         /* sector index */
+
+  int accessed;                     /* used when we selecting cache line to evict */
+  
+  int dirty;                        /* set to 1 when write is done */
+ 
+  
+  struct list_elem elem;
+
+};
+
+
+
+int buffer_cache_size;	//buffer_cache 크기를 저장
+
+struct lock buffer_cache_lock;	//cache lock
+
+
+struct list read_ahead_queue;   //read-ahead 할 sector들로 이루어진 리스트
+struct lock read_ahead_lock;	//read_ahead_queue의 동기화 문제를 해결하기 위한 lock
+struct read_ahead_elem{	//read_ahead_queue의 원소가 되는 structure	
+  disk_sector_t sector;
+  struct list_elem elem;
+};
+struct condition not_empty;	//read_ahead_queue가 비었을 때 신호를 주고받기 위한 condition variable
+
+---- ALGORITHMS ----
+
+>> C2: Describe how your cache replacement algorithm chooses a cache
+>> block to evict.
+
+  project3의 frame evict와 동일한 policy(second-chance algorithm)를 사용하였다. 
+buffer_cache 리스트를 탐색하며 모든 cache_line에 접근하여 
+이 중 accessed가 0이면 1로 바꾸어 주고 다음 cache_line으로 넘어가고, 
+1이면 evict를 진행한다. accessed는 해당 cache_line이 접근되었을 때 get_cache_line() 함수에서 1로 설정된다. 이렇게 하는 이유는 이전에 사용된 cache_line이라면
+ 다음에도 사용될 가능성이 높다고 판단했기 때문이다. 
+evict될 cache_line이 dirty이면 디스크에 데이터를 다시 써준다.
+ 이렇게 evict가 종료되는데 cache_line을 free하는 과정은 생략하였다. 
+그 이유는 evict한 cache_line에 바로 데이터가 쓰여질 것이기 때문에 
+처리과정을 줄이기 위해서이다.
+
+>> C3: Describe your implementation of write-behind.
+  우리의 코드에서는 cache_line structure의 member dirty를 이용해 write-behind를 구현한다.
+  즉, get_cache_line() 함수가 inode_write_at()에 의해 불렸을 때만 그 cache_line의 dirty를 1로 설정한다. 또한 evict_cache_line() 함수에서, victim cache_line의 dirty가 1일 때만 disk에 write한다. 그리고 셧다운될때, 모든 cache_line의 데이터를 disk에 써주어야 하는데, 이 때에도 각 cache_line의 dirty가 1일 때만 그 cache_line의 데이터를 disk에 write한다. 이는 filesys_done()에서 write_behind_all(true)을 부름으로써 구현되었다. 
+
+  또한 write-behind 정책을 채택했을 때의 취약함을 보완하기 위해 write-behind-all(false)를 주기적으로 부르는 background thread를 만들었다. 이 thread는 cache가 초기화될때 만들어지며, 500ticks 동안 잠들었다가, 모든 cache_line을 write-behind했다가를 반복하는 함수 periodical_write_back을 실행한다. 500ticks는 우리가 임의로 설정한 값이다.
+
+>> C4: Describe your implementation of read-ahead.
+  cache가 초기화될때, 함수 read_ahead_get을 실행하는 backgrownd thread를 만든다. read_ahead_get() 함수는 read_ahead_put() 함수와 긴밀하게 협력하며, list read_ahead_queue(=동기화되는 데이터), lock read_ahead_lock, condition variable not_emtpy로 구성된 monitor를 활용한다. 
+
+  read_ahead_queue는 read-ahead 할 sector들로 이루어진 리스트이다. 이 리스트가 empty일 경우에는 read-ahead 할 수 없으니(할 sector가 없음) cond_wait(&not_empty, &read_ahead_lock)을 불러 thread를 sleep 상태로 만들어 둔다. 한편, inode_read_at()함수에서 get_cache_line()을 부르기 전, 다음 sector가 존재한다면, read_ahead_put(다음 sector 번호)를 부른다. 그러면 read_ahead_put() 함수가 read_ahead_queue 리스트에 원소를 추가한 다음 cond_signal(&not_empty, &read_ahead_lock)을 불러 이 background thread가 깨어나게 된다. 그러면 read_ahead_get() 함수 안에서 리스트가 비기 전까지 원소를 pop하여 cache에 읽어오는 작업을 한 다음, 리스트가 비면 다시 cond_wait()이 불려 sleep 상태로 돌아간다.  
+
+---- SYNCHRONIZATION ----
+
+>> C5: When one process is actively reading or writing data in a
+>> buffer cache block, how are other processes prevented from evicting
+>> that block?
+
+  모든 buffer_cache에 접근할 때 buffer_cache_lock을 사용한다. 따라서 buffer_cache에
+ 하나의 프로세스밖에 접근하지 못한다. 따라서 한 프로세스가 cache_line에 접근하여 reading,
+ writing을 하고 있는 중이라면 사용을 끝낼 때까지  그 cache_line은 evict되지 않는다.
+
+>> C6: During the eviction of a block from the cache, how are other
+>> processes prevented from attempting to access the block?
+
+  C5와 마찬가지로 buffer_cache_lock을 사용하기 때문에 evict중이라면 evict가 
+끝날때까지 해당 cache에 접근하지 못한다. evict가 종료되고 나면 접근할 수 있다.
+
+---- RATIONALE ----
+
+>> C7: Describe a file workload likely to benefit from buffer caching,
+>> and workloads likely to benefit from read-ahead and write-behind.
+
+buffer caching : 짧은 길이의 파일을 많은 프로세스들이 접근할 때 유리하다.
+
+
+read-ahead : 긴 파일을 처음부터 끝까지 읽을 때 유리하다. 새로운 파일 영역을 읽을 때 마다 
+디스크 접근에 발생하는 딜레이를 줄일 수 있다.
+
+
+write_behind : 파일의 한 disk_sector_size 크기의 구역에 write를 많이 하는 경우에 
+유리하다. 디스크 접근을 줄일 수 있다.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students in future quarters?
+
+>> Any other comments?
